@@ -1,4 +1,16 @@
-# data-extraction-quarkus-experiments
+# uncertainty-quarkus-experiments
+
+# Prepare the Hugging Face token
+
+Sign up to Hugging Face and generate a valid token.
+Then, create an environment variable named `HUGGING_FACE_API_KEY` to expose the token, for instance, as below:
+
+```
+export HUGGING_FACE_API_KEY='hf_xxxxxxx'
+```
+
+Be sure that the Hugging Face token has the following permissions:
+ + `Make calls to the serverless Inference API`
 
 # Let's serve the model with Ollama:
 
