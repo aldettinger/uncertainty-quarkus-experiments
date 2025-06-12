@@ -1,58 +1,94 @@
 # uncertainty-quarkus-experiments
 
-# Prepare the Hugging Face token
+Find here the latest state of experiments related to the Granite uncertainty model.
+During preliminary work, a lot of issues were uncovered, especially while trying the serve the uncertainty model.
+At the end of the day, 2 resulting approaches were conclusive.
 
-Sign up to Hugging Face and generate a valid token.
-Then, create an environment variable named `HUGGING_FACE_API_KEY` to expose the token, for instance, as below:
+# Let's build local version of vLLM that can run without any GPU
 
-```
-export HUGGING_FACE_API_KEY='hf_xxxxxxx'
-```
-
-Be sure that the Hugging Face token has the following permissions:
- + `Make calls to the serverless Inference API`
-
-# Let's serve the model with Ollama:
-
-In a first shell, execute command below:
+To run on CPU, one needs to build vLLM locally, like below.
 
 ```
-TODO: complete instructions
+cd ~/dev/projects/vllm-upstream
+git fetch
+git checkout v0.8.5
+docker build -f docker/Dockerfile.cpu -t vllm-0.8.5-cpu-env --shm-size=4g .
 ```
 
-In a second shell, execute command below:
+# Approach 1: Merge the base model and LoRa adapter on an external platform
+
+Hitting so much issues to merge the base model and LoRa adapter on the local machine, I ended up merging them manually on [Kaggle](https://www.kaggle.com/code/alexdettinger/merging-uncertainty-lora).
+To reproduce, run all the Kaggle steps and download the resulting zip file containing the merged model.
+Unzip the Kaggle generated file to `dev/hugging-face-models/granite-3.2-8b-instruct-merged-with-uncertainty-lora/`.
+From there, it should be possible to run the merged model that way:
 
 ```
-TODO: complete instructions
+docker run -it --mount type=bind,source=/home/agallice/dev/hugging-face-models/,target=/hf-models --rm --network=host vllm-0.8.5-cpu-env --model /hf-models/granite-3.2-8b-instruct-merged-with-uncertainty-lora --max-model-len 16384
 ```
 
-## Packaging and running the application
+Wait for the startup to complete:
 
-The application can be packaged using:
+```
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
 
-```shell script
-./mvnw package
 ```
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+Now ask a question with the certainty role:
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
-
-## Creating a native executable
-
-You can create a native executable using:
-
-```shell script
-./mvnw package -Dnative
+```
+  curl -X POST "http://localhost:8000/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    --data '{
+        "model": "/hf-models/granite-3.2-8b-instruct-merged-with-uncertainty-lora",
+        "max_tokens": 3,
+        "messages": [
+            {
+                "role": "certainty",
+                "content": "What is the capital of France?"
+            }
+        ]
+    }'
 ```
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+Hopefully, it will answer with a certainty percentage, like `"content":"85%"`.
+On my machine, the certainty score for the capital of France question varies between 80% and 90%.
+That would be an indication that the model is confident to answer this question correctly most of the time.
 
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
+# Approach 2: Serve the base model and LoRa adapter locally
+
+The bug [VLLM-17396](https://github.com/vllm-project/vllm/issues/17396) has been fixed in commit [f2c3f66](https://github.com/vllm-project/vllm/commit/f2c3f66d59f9e38aa94985b54f370219222e7bd1). So, with vllm > 0.9.1, it should be possible to serve the model without merging manually on an external platform.
+
+```
+docker run -it --privileged=true --mount type=bind,source=/home/agallice/dev/hugging-face-models/,target=/hf-models --rm --network=host vllm-0.9.1-cpu-env --model /hf-models/granite-3.2-8b-instruct --max-model-len 16384 --enable-lora --lora-modules uncertainty-lora=/hf-models/granite-uncertainty-3.2-8b-lora
 ```
 
-You can then execute your native executable with: `./target/data-extraction-quarkus-experiments-1.0.0-SNAPSHOT-runner`
+Wait for the startup to complete:
 
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
+```
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+
+```
+
+In a second shell, ask a question to the uncertainty model with the certainty role:
+
+```
+  curl -X POST "http://localhost:8000/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    --data '{
+        "model": "uncertainty-lora",
+        "messages": [
+            {
+                "role": "certainty",
+                "max_tokens": 3,
+                "content": "What is the capital of France?"
+            }
+        ]
+    }'
+```
+
+However, the model simply answer the question and does not provide any confidence score.
+So the behavior differs from the model merged manually ?
